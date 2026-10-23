@@ -55,23 +55,26 @@ def transmitted(result, pid):
     return next(item for item in result["particles"] if item["id"] == pid)
 
 
-def assert_rejected(data, *, ledger_bytes=None):
-    """Assert rejection after a valid commit, including every observable side effect."""
+def rejection_effects(data, *, ledger_bytes=None):
+    """Run a rejection after a valid commit and return every observable side effect."""
     with tempfile.TemporaryDirectory() as td:
         bootstrap, _, _, original_ledger, _, *_ = invoke(request("rejection-precondition"), root=td)
         assert bootstrap.returncode == 0
         expected_ledger = original_ledger if ledger_bytes is None else ledger_bytes
-        proc, result, output_raw, next_ledger_raw, temps, *_ = invoke(data, root=td, output_bytes=b"OUTPUT-SENTINEL\n", ledger_bytes=ledger_bytes)
-        assert proc.returncode != 0
-        assert proc.stderr.startswith("INPUT_ERROR:")
-        assert result is None
-        assert output_raw == b"OUTPUT-SENTINEL\n"
-        assert next_ledger_raw == expected_ledger
-        assert temps == []
+        proc, result, output_raw, next_ledger_raw, temps, *_ = invoke(
+            data,
+            root=td,
+            output_bytes=b"OUTPUT-SENTINEL\n",
+            ledger_bytes=ledger_bytes,
+        )
+        return proc, result, output_raw, next_ledger_raw, temps, expected_ledger
 
 
 def test_drift_transport_in_uncovered_gaps():
-    """R1：未被元件覆盖的束线区间也必须按漂移传输。"""
+    """Case ID: BLO-R1-01
+    题面原文：“未被元件覆盖的区间按漂移段处理。”
+    行为：显式漂移元件之外的区间仍按同一漂移传输规则推进。
+    """
     data = request(line_end=4.0, particles=[particle("p", position=(1, -2), slope=(0.5, 1.0))], elements=[{"id": "declared-drift", "type": "drift", "s_start": 1.0, "s_end": 2.0}])
     proc, result, *_ = invoke(data)
     state = transmitted(result, "p")
@@ -82,7 +85,10 @@ def test_drift_transport_in_uncovered_gaps():
 
 
 def test_positive_quadrupole_focuses_x_and_defocuses_y():
-    """R2：正 k 的有限长四极铁必须使 x 聚焦、y 散焦。"""
+    """Case ID: BLO-R2-01
+    题面原文：“在有限长四极铁中，先计算 `k = charge * gradient / rigidity`。`x` 平面使用 `K=k`，`y` 平面使用 `K=-k`。”
+    行为：正梯度四极铁使 x 平面聚焦、y 平面散焦。
+    """
     data = request(line_end=0.5, particles=[particle("p", position=(1, 1))], elements=[{"id": "q", "type": "quadrupole", "s_start": 0.0, "s_end": 0.5, "gradient": 1.0}])
     proc, result, *_ = invoke(data)
     x, y = transmitted(result, "p")["position"]
@@ -93,7 +99,10 @@ def test_positive_quadrupole_focuses_x_and_defocuses_y():
 
 
 def test_charge_flip_swaps_quadrupole_planes():
-    """R2：电荷符号反转必须交换两个横向平面的聚焦响应。"""
+    """Case ID: BLO-R2-02
+    题面原文：“改变电荷或梯度符号会交换两个平面的响应。”
+    行为：电荷符号反转后，两个横向平面的响应互换。
+    """
     element = [{"id": "q", "type": "quadrupole", "s_start": 0.0, "s_end": 0.5, "gradient": 1.0}]
     _, positive, *_ = invoke(request("positive", line_end=0.5, particles=[particle("p", charge=1, position=(1, 1))], elements=element))
     _, negative, *_ = invoke(request("negative", line_end=0.5, particles=[particle("p", charge=-1, position=(1, 1))], elements=element))
@@ -105,7 +114,10 @@ def test_charge_flip_swaps_quadrupole_planes():
 
 
 def test_sequential_matrix_composition_requires_slope_transport():
-    """R3：四极铁后的漂移必须使用已改变的斜率，不能只变换位置。"""
+    """Case ID: BLO-R3-01
+    题面原文：“对每个平面独立应用传输：”
+    行为：四极铁后的漂移必须使用四极铁已改变的斜率做矩阵组合。
+    """
     elements = [{"id": "q", "type": "quadrupole", "s_start": 0.0, "s_end": 1.0, "gradient": 1.0}]
     proc, result, *_ = invoke(request(line_end=2.0, particles=[particle("p", position=(1, 0))], elements=elements))
     state = transmitted(result, "p")
@@ -116,7 +128,10 @@ def test_sequential_matrix_composition_requires_slope_transport():
 
 
 def test_quadrupole_boundary_is_applied_only_inside_interval():
-    """R3：屏幕恰在四极铁入口时先完成左侧漂移，入口场不能提前作用。"""
+    """Case ID: BLO-R3-02
+    题面原文：“所有位置相同的边界先完成左侧区间的传输；”
+    行为：屏幕位于四极铁入口时，只完成入口左侧的传输，入口场不能提前作用。
+    """
     elements = [{"id": "q", "type": "quadrupole", "s_start": 1.0, "s_end": 2.0, "gradient": 4.0}]
     proc, result, *_ = invoke(request(line_end=2.0, particles=[particle("p", position=(0, 0), slope=(1, 0))], elements=elements, screens=[{"id": "entry", "s": 1.0}]))
     hit = result["hits"][0]
@@ -127,7 +142,10 @@ def test_quadrupole_boundary_is_applied_only_inside_interval():
 
 
 def test_quadrupole_zero_gradient_is_drift():
-    """R3：零梯度四极铁是精确漂移而非数值奇异点。"""
+    """Case ID: BLO-R3-03
+    题面原文：“K = 0:  按漂移段处理”
+    行为：零梯度四极铁是精确漂移，不产生除零或其他数值奇异。
+    """
     element = [{"id": "q0", "type": "quadrupole", "s_start": 0.0, "s_end": 2.0, "gradient": 0.0}]
     proc, result, *_ = invoke(request(line_end=2.0, particles=[particle("p", position=(1, -1), slope=(0.25, -0.5))], elements=element))
     assert proc.returncode == 0
@@ -135,7 +153,10 @@ def test_quadrupole_zero_gradient_is_drift():
 
 
 def test_collimator_finds_first_internal_intersection():
-    """R4：准直器必须记录段内首次圆孔交点，而不是只看段末。"""
+    """Case ID: BLO-R4-01
+    题面原文：“否则必须求出在该段内**首次**满足 `x(s)²+y(s)² = radius²` 的位置；不能只检查段末位置。”
+    行为：准直器记录段内第一次穿过圆孔边界的位置，而不是只检查段末。
+    """
     elements = [{"id": "ap", "type": "collimator", "s_start": 0.0, "s_end": 2.0, "radius": 1.0}]
     proc, result, *_ = invoke(request(line_end=2.0, particles=[particle("p", slope=(1, 0))], elements=elements))
     loss = result["losses"][0]
@@ -146,7 +167,10 @@ def test_collimator_finds_first_internal_intersection():
 
 
 def test_collimator_entry_boundary_is_immediate_loss():
-    """R4：粒子在准直器入口已位于孔径边界时必须立刻损失。"""
+    """Case ID: BLO-R4-02
+    题面原文：“进入准直器时若 `x²+y² >= radius²`，粒子立刻在 `s_start` 被吸收。”
+    行为：粒子在准直器入口已位于孔径边界时立即损失。
+    """
     elements = [{"id": "ap", "type": "collimator", "s_start": 1.0, "s_end": 2.0, "radius": 1.0}]
     proc, result, *_ = invoke(request(line_end=2.0, particles=[particle("p", position=(1, 0))], elements=elements))
     assert proc.returncode == 0
@@ -154,7 +178,10 @@ def test_collimator_entry_boundary_is_immediate_loss():
 
 
 def test_collimator_exit_loss_precedes_same_coordinate_screen():
-    """R5：准直器出口孔径边界的损失优先于同 s 的截获屏。"""
+    """Case ID: BLO-R5-01
+    题面原文：“所有位置相同的边界先完成左侧区间的传输；若粒子恰好在准直器出口达到孔径边界，它先被准直器吸收，不能再被同一 `s` 处的屏幕记录。”
+    行为：准直器出口损失优先于同一 s 的截获屏命中。
+    """
     elements = [{"id": "ap", "type": "collimator", "s_start": 0.0, "s_end": 1.0, "radius": 1.0}]
     proc, result, *_ = invoke(request(line_end=1.0, particles=[particle("p", slope=(1, 0))], elements=elements, screens=[{"id": "end", "s": 1.0}]))
     assert proc.returncode == 0
@@ -164,7 +191,10 @@ def test_collimator_exit_loss_precedes_same_coordinate_screen():
 
 
 def test_screen_is_intercepting_and_stops_later_transport():
-    """R5：屏幕命中后粒子不得继续进入后续束线或最终透射集合。"""
+    """Case ID: BLO-R5-02
+    题面原文：“屏幕是截获式诊断屏：粒子抵达屏幕后记录命中并停止继续传输。”
+    行为：屏幕命中后粒子停止传输，不进入后续元件或最终透射集合。
+    """
     elements = [{"id": "after", "type": "quadrupole", "s_start": 1.0, "s_end": 2.0, "gradient": 3.0}]
     proc, result, *_ = invoke(request(line_end=2.0, particles=[particle("p", slope=(1, 0))], elements=elements, screens=[{"id": "screen", "s": 1.0}]))
     hit = result["hits"][0]
@@ -175,7 +205,10 @@ def test_screen_is_intercepting_and_stops_later_transport():
 
 
 def test_screen_inside_quadrupole_uses_partial_matrix():
-    """R6：位于四极铁内部的屏幕必须接收至该精确坐标的部分矩阵传播。"""
+    """Case ID: BLO-R6-01
+    题面原文：“**R6**：在元件内部的事件平面上做精确部分传输，并稳定排序同位事件。”
+    行为：位于四极铁内部的屏幕接收至该精确 s 坐标的部分矩阵传播结果。
+    """
     elements = [{"id": "q", "type": "quadrupole", "s_start": 0.0, "s_end": 2.0, "gradient": 1.0}]
     proc, result, *_ = invoke(request(line_end=2.0, particles=[particle("p", position=(1, 0))], elements=elements, screens=[{"id": "inside", "s": 0.5}]))
     hit = result["hits"][0]
@@ -185,7 +218,11 @@ def test_screen_inside_quadrupole_uses_partial_matrix():
 
 
 def test_events_are_stably_sorted_independent_of_particle_order():
-    """R6：同坐标事件按粒子 ID 排序，输入顺序不应改变可观察事件顺序。"""
+    """Case ID: BLO-R6-02
+    题面原文：“同一位置的损失按 `id` 字典序排列，所有损失按 `(s, id)` 排列。”
+    题面原文：“屏幕命中按 `(s, id)` 排列。屏幕命中的粒子不会出现在最终 `particles` 中。”
+    行为：同位事件按粒子 ID 稳定排序，输入粒子顺序不改变可观察事件顺序。
+    """
     elements = [{"id": "ap", "type": "collimator", "s_start": 0.0, "s_end": 1.0, "radius": 1.0}]
     ps = [particle("z", slope=(1, 0)), particle("a", slope=(1, 0))]
     _, first, *_ = invoke(request("sort-a", line_end=1.0, particles=ps, elements=elements))
@@ -195,7 +232,11 @@ def test_events_are_stably_sorted_independent_of_particle_order():
 
 
 def test_diagnostics_use_only_transmitted_particles():
-    """R7：质心、电荷和计数只能使用最终透射粒子，不能混入损失或屏幕命中。"""
+    """Case ID: BLO-R7-01
+    题面原文：“`diagnostics` 必须包含：”
+    题面原文：“`transmitted_charge`，仅统计最终透射粒子的电荷；”
+    行为：计数、电荷和质心只使用最终透射粒子，不混入损失或屏幕命中。
+    """
     elements = [{"id": "ap", "type": "collimator", "s_start": 0.0, "s_end": 1.0, "radius": 1.0}]
     ps = [particle("lost", charge=9, slope=(2, 0)), particle("live", charge=-2, position=(0.2, 0), slope=(0.1, 0))]
     proc, result, *_ = invoke(request(line_end=1.0, particles=ps, elements=elements))
@@ -207,7 +248,11 @@ def test_diagnostics_use_only_transmitted_particles():
 
 
 def test_population_covariance_and_rms_emittance_are_analytical():
-    """R7：四粒已知束团的总体协方差和 RMS 发射度必须与解析值一致。"""
+    """Case ID: BLO-R7-02
+    题面原文：“`covariance`：最终透射粒子的 4×4 总体协方差矩阵，变量顺序与 `centroid` 相同；少于两个透射粒子时为全零矩阵；”
+    题面原文：“- **R7**：只用最终透射粒子计算束流诊断、协方差和 RMS 发射度。”
+    行为：四粒已知束团的总体协方差和 RMS 发射度与解析值一致。
+    """
     ps = [particle("a", position=(1, 1), slope=(0, 0)), particle("b", position=(-1, -1), slope=(0, 0)), particle("c", position=(0, 0), slope=(1, 1)), particle("d", position=(0, 0), slope=(-1, -1))]
     proc, result, *_ = invoke(request(line_end=0.000001, particles=ps))
     diag = result["diagnostics"]
@@ -220,7 +265,12 @@ def test_population_covariance_and_rms_emittance_are_analytical():
 
 
 def test_first_batch_creates_ledger_with_matching_totals():
-    """R8：首次成功运行必须创建账本，且输出累计值与账本逐项一致。"""
+    """Case ID: BLO-R8-01
+    题面原文：“## 诊断、账本与写入语义”
+    题面原文：“成功输出必须是 UTF-8 JSON，键集合固定为 `status`、`run_id`、`line_end`、`particles`、`losses`、`hits`、`diagnostics`、`ledger_totals`。”
+    题面原文：“账本 JSON 的**键集合必须恰好**为 `schema`、`run_ids`、`totals`，并使用下列格式：”
+    行为：首次成功运行创建精确结构的账本，输出累计值与账本 totals 逐项一致。
+    """
     with tempfile.TemporaryDirectory() as td:
         proc, result, _, ledger_raw, temps, *_ = invoke(request("batch-1", line_end=1.0, particles=[particle("p", charge=3)]), root=td)
         ledger = json.loads(ledger_raw)
@@ -231,7 +281,10 @@ def test_first_batch_creates_ledger_with_matching_totals():
 
 
 def test_second_batch_accumulates_persistent_ledger():
-    """R8：不同 run_id 的第二批必须在同一账本上累加物理流量。"""
+    """Case ID: BLO-R8-02
+    题面原文：“每次成功运行必须把本次唯一的 `run_id` 追加到 `run_ids` 的末尾，并更新累计 `runs`、`transmitted`、`absorbed`、`screened` 和 `transmitted_charge`。”
+    行为：不同 run_id 的第二批在同一账本上累加物理流量。
+    """
     with tempfile.TemporaryDirectory() as td:
         first, _, _, _, _, *_ = invoke(request("one", line_end=1.0, particles=[particle("p", charge=2)]), root=td)
         elements = [{"id": "ap", "type": "collimator", "s_start": 0.0, "s_end": 1.0, "radius": 1.0}]
@@ -243,7 +296,10 @@ def test_second_batch_accumulates_persistent_ledger():
 
 
 def test_duplicate_run_id_rejects_without_any_side_effects():
-    """R9：重复批次必须拒收，并保持已有报告、账本和临时目录不变。"""
+    """Case ID: BLO-R9-01
+    题面原文：“重复 `run_id` 必须拒收。”
+    行为：重复批次被拒收；错误写入题面授权的 stderr 通道，已有报告、账本和临时目录不变。
+    """
     with tempfile.TemporaryDirectory() as td:
         first, _, output_raw, ledger_raw, _, *_ = invoke(request("once"), root=td)
         second, result, after_output, after_ledger, temps, *_ = invoke(request("once"), root=td)
@@ -253,26 +309,61 @@ def test_duplicate_run_id_rejects_without_any_side_effects():
 
 
 def test_invalid_overlapping_elements_preserve_report_and_ledger():
-    """R9：重叠元件是业务校验失败，必须不改写报告、账本或留下临时文件。"""
+    """Case ID: BLO-R9-02
+    题面原文：“不同元件的有效区间不得重叠。”
+    行为：重叠元件是业务校验失败，必须完整拒收且不改写报告、账本或留下临时文件。
+    """
     elements = [{"id": "a", "type": "drift", "s_start": 0, "s_end": 1}, {"id": "b", "type": "quadrupole", "s_start": 0.5, "s_end": 1.5, "gradient": 1}]
-    assert_rejected(request(line_end=2.0, elements=elements))
+    proc, result, output_raw, ledger_raw, temps, expected_ledger = rejection_effects(request(line_end=2.0, elements=elements))
+    assert proc.returncode != 0
+    assert proc.stderr.startswith("INPUT_ERROR:")
+    assert result is None
+    assert output_raw == b"OUTPUT-SENTINEL\n"
+    assert ledger_raw == expected_ledger
+    assert temps == []
 
 
 def test_malformed_ledger_and_nonfinite_or_boolean_inputs_preserve_artifacts():
-    """R9：损坏账本、非有限数和布尔伪数值均须通过完整副作用断言拒收。"""
-    assert_rejected(request("bad-ledger"), ledger_bytes=b"not-json\n")
-    assert_rejected(request("nan", particles=[particle("p", rigidity=float("nan"))]))
-    assert_rejected(request("bool", line_end=True))
+    """Case ID: BLO-R9-03
+    题面原文：“输入 JSON 必须是对象，包含以下字段：”
+    题面原文：“已有账本必须满足该精确结构”
+    行为：损坏账本、非有限数和布尔伪数值均通过完整拒收副作用断言。
+    """
+    cases = [
+        (request("bad-ledger"), b"not-json\n"),
+        (request("nan", particles=[particle("p", rigidity=float("nan"))]), None),
+        (request("bool", line_end=True), None),
+    ]
+    for data, ledger_bytes in cases:
+        proc, result, output_raw, ledger_raw, temps, expected_ledger = rejection_effects(data, ledger_bytes=ledger_bytes)
+        assert proc.returncode != 0
+        assert proc.stderr.startswith("INPUT_ERROR:")
+        assert result is None
+        assert output_raw == b"OUTPUT-SENTINEL\n"
+        assert ledger_raw == expected_ledger
+        assert temps == []
 
 
 def test_overflowing_quadrupole_is_rejected_without_partial_commit():
-    """R10：有限输入若导致双曲矩阵溢出，必须走 INPUT_ERROR 且保持所有持久化对象。"""
+    """Case ID: BLO-R10-01
+    题面原文：“任何产生非有限中间状态或输出状态的计算都必须作为输入/数值错误拒收，且不能修改已有输出或账本。”
+    行为：有限输入导致双曲矩阵溢出时走题面授权的错误通道，且不产生部分提交。
+    """
     elements = [{"id": "huge", "type": "quadrupole", "s_start": 0.0, "s_end": 2.0, "gradient": 1e308}]
-    assert_rejected(request("overflow", line_end=2.0, particles=[particle("p")], elements=elements))
+    proc, result, output_raw, ledger_raw, temps, expected_ledger = rejection_effects(request("overflow", line_end=2.0, particles=[particle("p")], elements=elements))
+    assert proc.returncode != 0
+    assert proc.stderr.startswith("INPUT_ERROR:")
+    assert result is None
+    assert output_raw == b"OUTPUT-SENTINEL\n"
+    assert ledger_raw == expected_ledger
+    assert temps == []
 
 
 def test_unwritable_ledger_parent_cleans_prepared_output_temp_and_preserves_output():
-    """R10：账本目标目录不存在时，已准备的输出临时文件必须清理且旧报告不能被改写。"""
+    """Case ID: BLO-R10-02
+    题面原文：“已有 `--output` 与 `--ledger` 文件均逐字节不变，且对应目录中不能遗留临时文件。”
+    行为：账本目标目录不可用时，已准备的输出临时文件被清理且旧报告保持不变。
+    """
     with tempfile.TemporaryDirectory() as td:
         bootstrap, *_ = invoke(request("io-precondition"), root=td)
         assert bootstrap.returncode == 0
@@ -289,7 +380,10 @@ def test_unwritable_ledger_parent_cleans_prepared_output_temp_and_preserves_outp
 
 
 def test_successful_atomic_replacement_does_not_mutate_symlink_targets():
-    """R10：成功提交必须替换输出和账本路径本身，不能沿符号链接改写旧目标。"""
+    """Case ID: BLO-R10-03
+    题面原文：“**R10**：通过同目录临时文件与原子替换提交输出和账本，处理数值溢出与既有路径。”
+    行为：成功提交替换输出和账本路径本身，不沿符号链接改写旧目标。
+    """
     empty_ledger = b'{"schema":"beamline-optics-ledger/v1","run_ids":[],"totals":{"runs":0,"transmitted":0,"absorbed":0,"screened":0,"transmitted_charge":0}}\n'
     with tempfile.TemporaryDirectory() as td:
         proc, result, output_raw, ledger_raw, temps, output, ledger, targets = invoke(request("atomic"), root=td, output_symlink=True, ledger_symlink=True, ledger_target_bytes=empty_ledger)
