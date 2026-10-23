@@ -1,0 +1,23 @@
+schema_version = "1.4"
+allow_internet = true
+
+[task]
+name = "local/beamline-optics-dynamics"
+version = "1.0.0"
+description = "Repair a deterministic paraxial charged-beam transport simulator with finite quadrupoles, collimator intersection events, intercepting screens, beam diagnostics, and a persistent run ledger."
+authors = [{ name = "xyj" }]
+keywords = ["physics", "beam-optics", "accelerator", "simulation", "numerical-methods"]
+
+[agent]
+timeout_sec = 3600
+
+[environment]
+network_mode = "public"
+build_timeout_sec = 900
+cpus = 2
+memory_mb = 2048
+storage_mb = 4096
+workdir = "/app"
+
+[verifier]
+timeout_sec = 1800
